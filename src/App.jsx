@@ -1,11 +1,11 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {FIELDS,autoMap,parseTranscript,validate} from './lib/parse.js';
-import {open,rowsOf,detectHeader,riskReport,appendEntries,toBytes} from './lib/excel.js';
+import {open,rowsOf,detectHeader,riskReport,appendEntries,toBytes,colInfo} from './lib/excel.js';
 import {putEntry,allEntries,setKv,getKv} from './lib/db.js';
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-const empty=Object.fromEntries(FIELDS.map(f=>[f.k,'']));
+const empty={};
 const stamp=()=>new Date().toISOString().replace(/[-:T]/g,'').slice(0,14).replace(/^(\d{8})/,'$1_');
-const dupKey=f=>['name','phone','variety','quantity','date'].map(k=>String(f[k]||'').toLowerCase().trim()).join('|');
+const dupKey=v=>Object.entries(v).map(([i,x])=>i+':'+String(x).toLowerCase().trim()).join('|');
 export default function App(){
  const [tab,setTab]=useState('home'),[buf,setBuf]=useState(null),[fname,setFname]=useState(''),[wb,setWb]=useState(null),[sheet,setSheet]=useState(''),[hdr,setHdr]=useState(-1),[map,setMap]=useState({}),[entries,setEntries]=useState([]),[form,setForm]=useState(empty),[tr,setTr]=useState(''),[lang,setLang]=useState('ta-IN'),[on,setOn]=useState(false),[msg,setMsg]=useState(null),[busy,setBusy]=useState(false),[online,setOnline]=useState(navigator.onLine);
  const rec=useRef(null),trRef=useRef('');
@@ -21,20 +21,23 @@ export default function App(){
   try{const b=await f.arrayBuffer(),w=open(b);if(!w.SheetNames.length)return err('This workbook has no worksheets.');setBuf(b);setFname(f.name);setWb(w);ok('Workbook loaded. Your original file is not modified.');await pick(w,w.SheetNames[0],b,f.name)}catch(x){err('Cannot read this file: '+x.message)}};
  const setHeader=n=>{const h=n-1,m=autoMap((rows[h]||[]).map(String));setHdr(h);setMap(m);persist({hdr:h,map:m})};
  const setCol=(k,i)=>{const m={...map,[k]:i};setMap(m);persist({map:m})};
- const extract=()=>{const p=parseTranscript(trRef.current);setForm(f=>({...f,...p}));if(!Object.keys(p).length)err('Nothing could be extracted. Fill the fields manually.')};
+ const extract=()=>{const p=parseTranscript(trRef.current),v={};for(const k in p)if(map[k]>=0)v[map[k]]=p[k];setForm(f=>({...f,...v}));if(!Object.keys(v).length)err("Nothing matched your sheet's columns. Fill the fields manually.")};
  const listen=()=>{if(!SR)return err('Speech recognition is not supported in this browser. Use Chrome on Android, or type below.');
   if(on){rec.current?.stop();return}if(!online)err('Speech recognition needs internet. Type the details instead.');
   const r=new SR();r.lang=lang;r.interimResults=true;r.onresult=e=>{const t=[...e.results].map(x=>x[0].transcript).join(' ');trRef.current=t;setTr(t)};
   r.onerror=e=>err('Voice error: '+e.error+'. Use manual entry.');r.onend=()=>{setOn(false);extract()};rec.current=r;
   try{r.start();setOn(true);setMsg(null)}catch(x){err(x.message)}};
- const shown=FIELDS.filter(f=>!wb||map[f.k]>=0);
- const save=async(status,ex)=>{if(busy)return;const f=ex?ex.fields:form,v=validate(f,shown.map(x=>x.k));if(v.errors.length)return err(v.errors.join(' '));
-  const key=dupKey(f);if(!ex&&entries.some(e=>e.key===key))return err('Duplicate: an identical entry already exists.');
-  if(status==='Confirmed'&&!confirm('Confirm this entry?\n\n'+shown.map(x=>x.l+': '+(f[x.k]||'—')).join('\n')+(v.warnings.length?'\n\n⚠ '+v.warnings.join(' '):'')))return;
-  setBusy(true);try{const e=ex?{...ex,status}:{id:crypto.randomUUID(),key,fields:f,status,createdAt:new Date().toISOString()};await putEntry(e);
+ const cols=useMemo(()=>wb?colInfo(wb.Sheets[sheet],rows,hdr):[],[wb,sheet,rows,hdr]);const shown=cols.filter(c=>c.kind==='field');
+ const norm=e=>e.vals?e:{...e,vals:Object.fromEntries(Object.entries(e.fields||{}).filter(([k,v])=>v!==''&&map[k]>=0).map(([k,v])=>[map[k],v]))};
+ const save=async(status,ex)=>{if(busy)return;if(!wb||hdr<0)return err('Load a workbook and set its header row first.');
+  const vals=Object.fromEntries(Object.entries(ex?norm(ex).vals:form).filter(([,v])=>String(v).trim()!==''));if(!Object.keys(vals).length)return err('Fill at least one field.');
+  const named={};for(const x of FIELDS)if(map[x.k]>=0)named[x.k]=vals[map[x.k]]||'';const v=validate(named,Object.keys(named));if(v.errors.length)return err(v.errors.join(' '));
+  const key=dupKey(vals);if(!ex&&entries.some(e=>e.key===key))return err('Duplicate: an identical entry already exists.');
+  if(status==='Confirmed'&&!confirm('Confirm this entry?\n\n'+shown.map(c=>c.h+': '+(vals[c.i]||'—')).join('\n')+(v.warnings.length?'\n\n⚠ '+v.warnings.join(' '):'')))return;
+  setBusy(true);try{const e=ex?{...norm(ex),status}:{id:crypto.randomUUID(),key,vals,title:vals[map.name]||Object.values(vals)[0],status,createdAt:new Date().toISOString()};await putEntry(e);
    setEntries(p=>[e,...p.filter(x=>x.id!==e.id)]);if(!ex){setForm(empty);setTr('');trRef.current=''}
    ok(status==='Confirmed'?'Entry confirmed and stored on this device. Export to add it to Excel.':'Saved as Pending draft.')}catch(x){err('Save failed: '+x.message)}finally{setBusy(false)}};
- const exportX=async()=>{if(busy)return;const list=entries.filter(e=>e.status==='Confirmed').reverse();
+ const exportX=async()=>{if(busy)return;const list=entries.filter(e=>e.status==='Confirmed').reverse().map(norm);
   if(!buf||hdr<0)return err('Import a workbook and set its header row first.');if(!list.length)return err('No Confirmed entries to export.');
   const w=open(buf),risk=riskReport(w,fname);if(risk.block)return err(risk.block);
   if(!confirm(risk.warns.join('\n\n')+'\n\nExport a new copy with '+list.length+' new row(s)?'))return;
@@ -61,7 +64,7 @@ export default function App(){
    {wb&&<><div className="card"><b>{fname}</b>
     <label>Worksheet</label><select value={sheet} onChange={e=>pick(wb,e.target.value,buf,fname)}>{wb.SheetNames.map(s=><option key={s}>{s}</option>)}</select>
     <label>Header row number</label><input type="number" min="1" value={hdr+1||''} onChange={e=>setHeader(+e.target.value)}/>
-    {headers.length>0&&<><h2>Column mapping</h2>{FIELDS.map(f=><div key={f.k}><label>{f.l}</label><select value={map[f.k]??-1} onChange={e=>setCol(f.k,+e.target.value)}><option value={-1}>— not in workbook —</option>{headers.map((h,i)=>h&&<option key={i} value={i}>{h}</option>)}</select></div>)}</>}</div>
+    {headers.length>0&&<><h2>Voice matching</h2><p className="note">Tell RiceMate which column each spoken detail belongs to. Every other column still appears in the form to fill in.</p>{FIELDS.map(f=><div key={f.k}><label>{f.l}</label><select value={map[f.k]??-1} onChange={e=>setCol(f.k,+e.target.value)}><option value={-1}>— not in workbook —</option>{headers.map((h,i)=>h&&<option key={i} value={i}>{h}</option>)}</select></div>)}</>}</div>
     <h2>Preview (last 8 rows)</h2><div className="scroll"><table><tbody>{rows.slice(Math.max(0,rows.length-8)).map((r,i)=><tr key={i}>{r.map((c,j)=><td key={j}>{String(c)}</td>)}</tr>)}</tbody></table></div></>}</>}
   {tab==='voice'&&<>
    <select aria-label="Language" value={lang} onChange={e=>setLang(e.target.value)}><option value="ta-IN">தமிழ் (Tamil)</option><option value="en-IN">English (India)</option></select>
@@ -70,15 +73,16 @@ export default function App(){
    <label>Transcript (edit freely)</label><textarea rows="3" value={tr} onChange={e=>{setTr(e.target.value);trRef.current=e.target.value}}/>
    <button className="b alt" onClick={extract}>Extract fields from text</button>
    <div className="card"><h2>Confirm details</h2>
-    {!wb&&<p className="note">No workbook loaded: all fields shown. Load your workbook so only its columns are used.</p>}
-    {shown.map(f=><div key={f.k}><label htmlFor={'x'+f.k}>{f.l}</label><input id={'x'+f.k} type={f.k==='date'?'date':'text'} inputMode={['phone','quantity','price'].includes(f.k)?'decimal':'text'} value={form[f.k]} onChange={e=>setForm({...form,[f.k]:e.target.value})}/></div>)}
+    {!wb&&<p className="note">Load your Excel workbook first (Excel tab). The form is built from its columns.</p>}
+    {cols.some(c=>c.h&&c.kind!=='field')&&<p className="note">Not shown: {cols.filter(c=>c.h&&c.kind!=='field').map(c=>c.h+(c.kind==='serial'?' (auto-numbered)':' (formula)')).join(', ')}</p>}
+    {shown.map(c=><div key={c.i}><label htmlFor={'x'+c.i}>{c.h}</label><input id={'x'+c.i} type={map.date===c.i?'date':'text'} inputMode={[map.phone,map.quantity,map.price].includes(c.i)?'decimal':'text'} value={form[c.i]??''} onChange={e=>setForm({...form,[c.i]:e.target.value})}/></div>)}
     <button className="b" disabled={busy} onClick={()=>save('Confirmed')}>Save Entry</button>
     <button className="b alt" disabled={busy} onClick={()=>save('Pending')}>Save as Pending draft</button>
     <button className="b alt" onClick={()=>{setForm(empty);setTr('');trRef.current=''}}>Clear</button></div></>}
   {tab==='list'&&<>
    <button className="b" onClick={exportX} disabled={busy}>Export Updated Excel</button>
    {!entries.length&&<p className="note">No entries yet. Record one on the Voice tab.</p>}
-   {entries.map(e=><div className="card" key={e.id}><span className={'chip '+e.status}>{e.status}</span> <b>{e.fields.name}</b>
-    <div className="note">{[e.fields.location,e.fields.variety,e.fields.quantity&&e.fields.quantity+' '+e.fields.unit,e.fields.price&&'₹'+e.fields.price,e.fields.payment].filter(Boolean).join(' · ')}</div>
+   {entries.map(e=><div className="card" key={e.id}><span className={'chip '+e.status}>{e.status}</span> <b>{e.title||Object.values(norm(e).vals)[0]||'(empty)'}</b>
+    <div className="note">{Object.values(norm(e).vals).slice(0,5).join(' · ')}</div>
     {e.status==='Pending'&&<button className="b alt" disabled={busy} onClick={()=>save('Confirmed',e)}>Review &amp; Confirm</button>}</div>)}</>}
  </main><nav>{T.map(([k,l])=><button key={k} aria-current={tab===k} onClick={()=>{setTab(k);setMsg(null)}}>{l}</button>)}</nav></>}

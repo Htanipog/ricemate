@@ -14,7 +14,7 @@ Open the printed address. To use it on a phone, open `http://<PC-IP>:5173` on th
 
 ## Using it
 1. **Excel** tab: pick the company workbook, check worksheet, header row and column mapping.
-2. **Voice** tab: tap mic (Chrome on Android recommended; needs internet), or type. Review/edit fields, **Save Entry** (asks to confirm).
+2. **Voice** tab: the form is built from every column of your sheet (blank, serial-number and formula columns are skipped; serial numbers are auto-continued). Tap mic (Chrome, needs internet) or type. Review/edit, then **Save Entry**.
 3. **Entries** tab: **Export Updated Excel** downloads a NEW file `name_updated_YYYYMMDD_HHMMSS.xlsx`. The original is never touched. The exported copy becomes the base for later entries.
 
 ## Data safety

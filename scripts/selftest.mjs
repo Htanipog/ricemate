@@ -1,6 +1,6 @@
 import assert from 'node:assert';import * as XLSX from 'xlsx';
 import {parseTranscript,autoMap,validate} from '../src/lib/parse.js';
-import {open,rowsOf,detectHeader,appendEntries,toBytes,riskReport} from '../src/lib/excel.js';
+import {open,rowsOf,detectHeader,appendEntries,toBytes,riskReport,colInfo} from '../src/lib/excel.js';
 const p=parseTranscript('Kumar Stores, Coimbatore, phone number 9876 543210, 20 bags of Ponni rice, 50 rupees per kilo, payment pending.');
 assert.deepEqual([p.name,p.location,p.phone,p.quantity,p.unit,p.price,p.variety,p.payment],['Kumar Stores','Coimbatore','9876543210','20','bags','50','Ponni','Pending']);
 assert.equal(parseTranscript('Raja').phone,undefined);assert.equal(parseTranscript('Raja').quantity,undefined);
@@ -11,8 +11,9 @@ const ws=XLSX.utils.aoa_to_sheet(aoa);ws['E4']={t:'n',f:'D4*2',v:10};
 const wb0=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb0,ws,'S');
 const wb=open(toBytes(wb0));const rows=rowsOf(wb.Sheets.S);const h=detectHeader(rows);assert.equal(h,2);
 const m=autoMap(rows[h]);assert.deepEqual([m.name,m.phone,m.variety,m.quantity],[0,1,2,3]);
+assert.equal(colInfo(wb.Sheets.S,rows,h).find(c=>c.h==='Total').kind,'formula');
 assert.ok(riskReport(wb,'a.xlsx').warns.some(x=>/formula/.test(x)));
-appendEntries(wb,'S',h,m,[{fields:{name:'Kumar',phone:'09876543210',variety:'Ponni',quantity:'20'}},{fields:{name:'Siva',phone:'',variety:'',quantity:'3'}}]);
+appendEntries(wb,'S',h,m,[{vals:{0:'Kumar',1:'09876543210',2:'Ponni',3:'20'}},{vals:{0:'Siva',3:'3'}}]);
 const r=rowsOf(open(toBytes(wb)).Sheets.S);
 assert.equal(r[3][0],'Old');assert.equal(r[4][0],'Kumar');assert.equal(r[4][1],'09876543210');assert.equal(r[5][0],'Siva');
 const w2=open(toBytes(wb));assert.equal(w2.Sheets.S.B5.t,'s');assert.equal(w2.Sheets.S.E4.f,'D4*2');
